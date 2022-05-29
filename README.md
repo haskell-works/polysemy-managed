@@ -1,1 +1,1 @@
-# polysemy-resourcet
+# polysemy-managed
