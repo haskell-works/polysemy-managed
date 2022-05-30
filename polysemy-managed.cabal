@@ -1,7 +1,7 @@
 cabal-version: 2.2
 
 name:                   polysemy-managed
-version:                0.6.3.1
+version:                0.1.0.0
 synopsis:               Primitive functions and data types
 description:            Primitive functions and data types.
 category:               Data
@@ -13,7 +13,7 @@ maintainer:             newhoggy@gmail.com
 copyright:              2016-2021 John Ky
 license:                BSD-3-Clause
 license-file:           LICENSE
-tested-with:            GHC == 9.2.2, GHC == 9.0.2, GHC == 8.10.7, GHC == 8.8.4, GHC == 8.6.5
+tested-with:            GHC == 9.2.2, GHC == 9.0.2, GHC == 8.10.7
 build-type:             Simple
 extra-source-files:     README.md
 
