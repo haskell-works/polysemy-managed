@@ -16,6 +16,7 @@
 module Polysemy.Managed
   ( runManagedResource
   , runManaged
+  , runManagedFinal
   , managedAsk
   , managedLocal
   ) where
@@ -24,27 +25,42 @@ import Control.Exception qualified as E
 import Control.Monad.Trans.Resource (createInternalState, MonadResource, InternalState)
 import Control.Monad.Trans.Resource qualified as MTR
 import Control.Monad.Trans.Resource.Internal qualified as RI
-import Polysemy (withLowerToIO, Embed, Sem, Member, embed, makeSem, interpretH, runT, raise, pureT)
+import Polysemy (Embed, Final, Sem, Member)
+import Polysemy qualified as P
+import Polysemy.Final qualified as PF
 import Polysemy.Reader (Reader, runReader)
 
 data Managed m a where
   ManagedAsk :: Managed m InternalState
   ManagedLocal :: m a -> Managed m a
 
-makeSem ''Managed
+P.makeSem ''Managed
 
 runManagedImpl :: forall a r. ()
   => Member (Embed IO) r
   => InternalState
   -> Sem (Managed ': r) a
   -> Sem r a
-runManagedImpl state = interpretH $ \case
-  ManagedAsk -> pureT state
+runManagedImpl state = P.interpretH $ \case
+  ManagedAsk -> P.pureT state
   ManagedLocal m -> do
-    mm <- runT m
+    mm <- P.runT m
     newState <- createInternalState
-    resourceBracket2 newState $ raise $ runManagedImpl newState mm
+    resourceBracket2 newState $ P.raise $ runManagedImpl newState mm
 {-# INLINE runManagedImpl #-}
+
+runManagedFinalImpl :: forall a r. ()
+  => Member (Final IO) r
+  => InternalState
+  -> Sem (Managed ': r) a
+  -> Sem r a
+runManagedFinalImpl state = P.interpretH $ \case
+  ManagedAsk -> P.pureT state
+  ManagedLocal m -> do
+    mm <- P.runT m
+    newState <- P.embedFinal @IO createInternalState
+    resourceBracket2Final newState $ P.raise $ runManagedFinalImpl newState mm
+{-# INLINE runManagedFinalImpl #-}
 
 runManaged :: forall a r. ()
   => Member (Embed IO) r
@@ -55,13 +71,22 @@ runManaged f = do
   resourceBracket2 state $ runManagedImpl state f
 {-# INLINE runManaged #-}
 
+runManagedFinal :: forall a r. ()
+  => Member (Final IO) r
+  => Sem (Managed ': r) a
+  -> Sem r a
+runManagedFinal f = do
+  state <- P.embedFinal @IO createInternalState
+  resourceBracket2Final state $ runManagedFinalImpl state f
+{-# INLINE runManagedFinal #-}
+
 resourceBracket2 :: forall a r. ()
   => Member (Embed IO) r
   => MTR.InternalState
   -> Sem r a
   -> Sem r a
 resourceBracket2 istate f = do
-  withLowerToIO $ \lower finish -> do
+  P.withLowerToIO $ \lower finish -> do
     E.mask $ \restore -> do
       res <- restore (lower f) `E.catch` \e -> do
         RI.stateCleanupChecked (Just e) istate
@@ -69,6 +94,20 @@ resourceBracket2 istate f = do
       RI.stateCleanupChecked Nothing istate
       finish
       return res
+
+resourceBracket2Final :: forall a r. ()
+  => Member (Final IO) r
+  => MTR.InternalState
+  -> Sem r a
+  -> Sem r a
+resourceBracket2Final istate f = PF.withStrategicToFinal @IO $ do
+  f' <- PF.runS f
+  pure $ E.mask $ \restore -> do
+    res <- restore f' `E.catch` \e -> do
+      RI.stateCleanupChecked  (Just e) istate
+      E.throwIO e
+    RI.stateCleanupChecked Nothing istate
+    pure res
 
 runManagedResource :: ()
   => Member (Embed IO) r
@@ -82,4 +121,4 @@ instance
   ( Member (Embed IO) r
   , Member Managed r
   ) => MonadResource (Sem r) where
-  liftResourceT (RI.ResourceT r) = managedAsk >>= embed . r
+  liftResourceT (RI.ResourceT r) = managedAsk >>= P.embed . r
