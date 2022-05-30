@@ -14,9 +14,12 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Polysemy.Managed
-  ( runManagedResource
+  ( Managed(..)
+
+  , runManagedResource
   , runManaged
   , runManagedFinal
+
   , managedAsk
   , managedLocal
   ) where
@@ -36,6 +39,35 @@ data Managed m a where
 
 P.makeSem ''Managed
 
+runManaged :: forall a r. ()
+  => Member (Embed IO) r
+  => Sem (Managed ': r) a
+  -> Sem r a
+runManaged f = do
+  state <- createInternalState
+  managedBracketImpl state $ runManagedImpl state f
+{-# INLINE runManaged #-}
+
+runManagedFinal :: forall a r. ()
+  => Member (Final IO) r
+  => Sem (Managed ': r) a
+  -> Sem r a
+runManagedFinal f = do
+  state <- P.embedFinal @IO createInternalState
+  managedBracketFinalImpl state $ runManagedFinalImpl state f
+{-# INLINE runManagedFinal #-}
+
+runManagedResource :: ()
+  => Member (Embed IO) r
+  => Sem (Reader MTR.InternalState ': r) a
+  -> Sem r a
+runManagedResource f = do
+  istate <- createInternalState
+  runReader istate f
+
+--------------------------------------------------------------------------------
+-- Internal
+
 runManagedImpl :: forall a r. ()
   => Member (Embed IO) r
   => InternalState
@@ -46,7 +78,7 @@ runManagedImpl state = P.interpretH $ \case
   ManagedLocal m -> do
     mm <- P.runT m
     newState <- createInternalState
-    resourceBracket2 newState $ P.raise $ runManagedImpl newState mm
+    managedBracketImpl newState $ P.raise $ runManagedImpl newState mm
 {-# INLINE runManagedImpl #-}
 
 runManagedFinalImpl :: forall a r. ()
@@ -59,33 +91,15 @@ runManagedFinalImpl state = P.interpretH $ \case
   ManagedLocal m -> do
     mm <- P.runT m
     newState <- P.embedFinal @IO createInternalState
-    resourceBracket2Final newState $ P.raise $ runManagedFinalImpl newState mm
+    managedBracketFinalImpl newState $ P.raise $ runManagedFinalImpl newState mm
 {-# INLINE runManagedFinalImpl #-}
 
-runManaged :: forall a r. ()
-  => Member (Embed IO) r
-  => Sem (Managed ': r) a
-  -> Sem r a
-runManaged f = do
-  state <- createInternalState
-  resourceBracket2 state $ runManagedImpl state f
-{-# INLINE runManaged #-}
-
-runManagedFinal :: forall a r. ()
-  => Member (Final IO) r
-  => Sem (Managed ': r) a
-  -> Sem r a
-runManagedFinal f = do
-  state <- P.embedFinal @IO createInternalState
-  resourceBracket2Final state $ runManagedFinalImpl state f
-{-# INLINE runManagedFinal #-}
-
-resourceBracket2 :: forall a r. ()
+managedBracketImpl :: forall a r. ()
   => Member (Embed IO) r
   => MTR.InternalState
   -> Sem r a
   -> Sem r a
-resourceBracket2 istate f = do
+managedBracketImpl istate f = do
   P.withLowerToIO $ \lower finish -> do
     E.mask $ \restore -> do
       res <- restore (lower f) `E.catch` \e -> do
@@ -95,12 +109,12 @@ resourceBracket2 istate f = do
       finish
       return res
 
-resourceBracket2Final :: forall a r. ()
+managedBracketFinalImpl :: forall a r. ()
   => Member (Final IO) r
   => MTR.InternalState
   -> Sem r a
   -> Sem r a
-resourceBracket2Final istate f = PF.withStrategicToFinal @IO $ do
+managedBracketFinalImpl istate f = PF.withStrategicToFinal @IO $ do
   f' <- PF.runS f
   pure $ E.mask $ \restore -> do
     res <- restore f' `E.catch` \e -> do
@@ -108,14 +122,6 @@ resourceBracket2Final istate f = PF.withStrategicToFinal @IO $ do
       E.throwIO e
     RI.stateCleanupChecked Nothing istate
     pure res
-
-runManagedResource :: ()
-  => Member (Embed IO) r
-  => Sem (Reader MTR.InternalState ': r) a
-  -> Sem r a
-runManagedResource f = do
-  istate <- createInternalState
-  runReader istate f
 
 instance
   ( Member (Embed IO) r
